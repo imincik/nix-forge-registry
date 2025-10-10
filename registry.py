@@ -20,26 +20,16 @@ def compute_sha256(data: bytes) -> str:
     return "sha256:" + h.hexdigest()
 
 
-def build_image_if_missing(image_name: str) -> str:
+def build_image(image_name: str) -> str:
     """
-    Ensure ./result/<image_name>.tar.gz exists.
-    If not, run `nix build .#<image_name>.image`.
+    Build image with nix.
     """
-    # FIXME:
-    # check    nix eval github:imincik/flake-forge#geos.image.outPath
+    print(f"[INFO] Building image with nix ...")
 
-    # tar_path = os.path.join(RESULT_DIR, f"{image_name}.tar.gz")
-    # tar_path = os.path.join(RESULT_DIR)
-
-    # If it already exists, use it
-    # if os.path.exists(tar_path):
-        # return tar_path
-
-    # Otherwise, build it with nix
-    print(f"[INFO] Image '{image_name}' not found. Building with nix ...")
+    nix_build_cmd = ["nix", "build", f"github:imincik/flake-forge#{image_name}.image", "--print-out-paths"]
     try:
         nix_cmd = subprocess.run(
-            ["nix", "build", f"github:imincik/flake-forge#{image_name}.image", "--print-out-paths"],
+            nix_build_cmd,
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -104,7 +94,7 @@ def v2_root():
 
 @app.route("/v2/<image_name>/manifests/<tag>")
 def get_manifest(image_name, tag):
-    tar_path = build_image_if_missing(image_name)
+    tar_path = build_image(image_name)
     meta = load_image_metadata(tar_path)
 
     manifest = {
@@ -136,7 +126,7 @@ def get_manifest(image_name, tag):
 
 @app.route("/v2/<image_name>/blobs/<digest>")
 def get_blob(image_name, digest):
-    tar_path = build_image_if_missing(image_name)
+    tar_path = build_image(image_name)
     meta = load_image_metadata(tar_path)
 
     # Config blob
