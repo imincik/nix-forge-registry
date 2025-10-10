@@ -8,8 +8,6 @@ import subprocess
 
 app = Flask(__name__)
 
-RESULT_DIR = "./result"
-
 
 # -------------------------------
 # Utility Functions
@@ -27,19 +25,22 @@ def build_image_if_missing(image_name: str) -> str:
     Ensure ./result/<image_name>.tar.gz exists.
     If not, run `nix build .#<image_name>.image`.
     """
+    # FIXME:
+    # check    nix eval github:imincik/flake-forge#geos.image.outPath
+
     # tar_path = os.path.join(RESULT_DIR, f"{image_name}.tar.gz")
-    tar_path = os.path.join(RESULT_DIR)
+    # tar_path = os.path.join(RESULT_DIR)
 
     # If it already exists, use it
-    if os.path.exists(tar_path):
-        return tar_path
+    # if os.path.exists(tar_path):
+        # return tar_path
 
     # Otherwise, build it with nix
-    print(f"[INFO] Image '{image_name}' not found. Building with nix...")
+    print(f"[INFO] Image '{image_name}' not found. Building with nix ...")
     try:
-        subprocess.run(
+        nix_cmd = subprocess.run(
             # FIXME: --builders
-            ["nix", "build", f"github:imincik/flake-forge#{image_name}.image", "--builders", "\"\""],
+            ["nix", "build", f"github:imincik/flake-forge#{image_name}.image", "--print-out-paths",  "--builders", "\"\""],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -48,7 +49,9 @@ def build_image_if_missing(image_name: str) -> str:
         print("[ERROR] nix build failed:", e.stderr.decode())
         abort(500, f"Failed to build image '{image_name}'")
 
-    # After build, look for result/<image_name>.tar.gz
+    tar_path=nix_cmd.stdout.decode().strip()
+
+    # After build, look for resulting tarball
     if not os.path.exists(tar_path):
         abort(404, f"Expected build output not found: {tar_path}")
 
@@ -164,6 +167,5 @@ def get_blob(image_name, digest):
 # -------------------------------
 
 if __name__ == "__main__":
-    # os.makedirs(RESULT_DIR, exist_ok=True)
     app.run(host="0.0.0.0", port=5000)
 
