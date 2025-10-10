@@ -39,8 +39,7 @@ def build_image_if_missing(image_name: str) -> str:
     print(f"[INFO] Image '{image_name}' not found. Building with nix ...")
     try:
         nix_cmd = subprocess.run(
-            # FIXME: --builders
-            ["nix", "build", f"github:imincik/flake-forge#{image_name}.image", "--print-out-paths",  "--builders", "\"\""],
+            ["nix", "build", f"github:imincik/flake-forge#{image_name}.image", "--print-out-paths"],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
