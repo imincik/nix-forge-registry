@@ -1,3 +1,44 @@
+"""
+OCI-compliant container registry with on-demand Nix builds.
+
+This registry implements the OCI Distribution Specification v1.0 with backward
+compatibility for Docker Registry v2 API. Images are built on-demand using Nix
+when requested, eliminating the need for pre-built image storage.
+
+Features:
+    - OCI Distribution Specification compliant
+    - Docker Registry v2 API compatible
+    - On-demand image building with Nix
+    - Memory-efficient blob streaming
+    - LRU caching for manifest metadata
+    - Comprehensive input validation
+    - Configurable via environment variables
+    - Real-time build output streaming in debug mode
+
+Architecture:
+    1. Client requests manifest (GET /v2/<name>/manifests/<tag>)
+    2. Registry builds image using Nix if not cached
+    3. Registry extracts and caches manifest metadata
+    4. Registry returns manifest in OCI or Docker format
+    5. Client requests blobs (GET /v2/<name>/blobs/<digest>)
+    6. Registry streams requested blobs from tarball
+
+OCI Endpoints:
+    - GET /v2/ - Version check
+    - GET/HEAD /v2/<name>/manifests/<tag> - Get/check manifest
+    - GET/HEAD /v2/<name>/blobs/<digest> - Get/check blob
+
+Environment Variables:
+    LOG_LEVEL, FLASK_HOST, FLASK_PORT, GITHUB_REPO, NIX_BUILD_TIMEOUT,
+    CACHE_SIZE, MAX_IMAGE_NAME_LENGTH, MAX_TAG_LENGTH
+
+Example:
+    $ LOG_LEVEL=DEBUG python registry.py
+    $ podman pull localhost:5000/myimage:latest
+
+See README.md for full documentation.
+"""
+
 from flask import Flask, send_file, abort, Response, make_response, request
 import tarfile
 import json
@@ -17,9 +58,27 @@ from functools import lru_cache
 
 
 class Config:
-    """Registry configuration from environment variables."""
+    """
+    Registry configuration from environment variables.
+
+    Loads all configuration values from environment variables with sensible defaults.
+    All settings can be overridden by setting the corresponding environment variable.
+    """
 
     def __init__(self):
+        """
+        Initialize configuration from environment variables.
+
+        Environment Variables:
+            LOG_LEVEL: Logging level (DEBUG, INFO, WARNING, ERROR). Default: INFO
+            FLASK_HOST: Server bind address. Default: 0.0.0.0
+            FLASK_PORT: Server bind port. Default: 5000
+            GITHUB_REPO: Nix flake repository URL. Default: github:imincik/flake-forge
+            NIX_BUILD_TIMEOUT: Build timeout in seconds. Default: 600
+            CACHE_SIZE: Number of manifests to cache. Default: 50
+            MAX_IMAGE_NAME_LENGTH: Maximum image name length. Default: 255
+            MAX_TAG_LENGTH: Maximum tag length. Default: 128
+        """
         # Logging
         self.LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
@@ -69,7 +128,19 @@ app = Flask(__name__)
 
 
 def compute_sha256(data: bytes) -> str:
-    """Return Docker-style sha256 digest."""
+    """
+    Compute SHA256 digest in OCI/Docker format.
+
+    Args:
+        data: Bytes to hash
+
+    Returns:
+        String in format "sha256:<64 hex chars>"
+
+    Example:
+        >>> compute_sha256(b"hello")
+        'sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824'
+    """
     h = hashlib.sha256()
     h.update(data)
     return "sha256:" + h.hexdigest()
@@ -79,8 +150,19 @@ def validate_image_name(name: str) -> None:
     """
     Validate image name to prevent injection attacks.
 
-    Allows only alphanumeric characters, hyphens, underscores, and dots.
-    Raises 400 error if invalid.
+    Args:
+        name: Image name to validate
+
+    Raises:
+        HTTPException: 400 Bad Request if name is invalid
+
+    Validation Rules:
+        - Must be 1-{MAX_IMAGE_NAME_LENGTH} characters (configurable)
+        - Only alphanumeric characters, dots (.), hyphens (-), and underscores (_)
+        - No special characters or path separators allowed
+
+    Security:
+        Prevents command injection when used in subprocess calls to Nix.
     """
     if not name or len(name) > config.MAX_IMAGE_NAME_LENGTH:
         logger.warning(f"Invalid image name length: {len(name)}")
@@ -95,10 +177,18 @@ def validate_image_name(name: str) -> None:
 
 def validate_tag(tag: str) -> None:
     """
-    Validate tag name.
+    Validate container image tag.
 
-    Allows alphanumeric characters, hyphens, underscores, and dots.
-    Raises 400 error if invalid.
+    Args:
+        tag: Tag name to validate
+
+    Raises:
+        HTTPException: 400 Bad Request if tag is invalid
+
+    Validation Rules:
+        - Must be 1-{MAX_TAG_LENGTH} characters (configurable)
+        - Only alphanumeric characters, dots (.), hyphens (-), and underscores (_)
+        - Common tags: latest, v1.0.0, prod, staging, etc.
     """
     if not tag or len(tag) > config.MAX_TAG_LENGTH:
         logger.warning(f"Invalid tag length: {len(tag)}")
@@ -113,10 +203,20 @@ def validate_tag(tag: str) -> None:
 
 def validate_digest(digest: str) -> None:
     """
-    Validate SHA256 digest format.
+    Validate SHA256 digest format per OCI specification.
 
-    Must match format: sha256:<64 hex chars>
-    Raises 400 error if invalid.
+    Args:
+        digest: Digest string to validate
+
+    Raises:
+        HTTPException: 400 Bad Request if digest is invalid
+
+    Format:
+        Must match: sha256:<64 lowercase hex characters>
+
+    Example:
+        Valid: "sha256:abc123...def" (64 hex chars after colon)
+        Invalid: "sha256:ABC123" (uppercase), "md5:123" (wrong algorithm)
     """
     if not re.match(r'^sha256:[a-f0-9]{64}$', digest):
         logger.warning(f"Invalid digest format: {digest}")
@@ -127,7 +227,28 @@ def validate_digest(digest: str) -> None:
 
 def build_image(image_name: str) -> str:
     """
-    Build image with Nix.
+    Build container image using Nix and return path to tarball.
+
+    Args:
+        image_name: Name of the image to build (validated before use)
+
+    Returns:
+        Absolute path to the built image tarball in Nix store
+
+    Raises:
+        HTTPException: 400 if image_name is invalid
+        HTTPException: 404 if build output not found
+        HTTPException: 500 if Nix build fails
+        HTTPException: 504 if build times out
+
+    Behavior:
+        - In DEBUG mode: streams build output line-by-line to logs
+        - In normal mode: captures output silently
+        - Respects NIX_BUILD_TIMEOUT configuration
+        - Validates image_name to prevent command injection
+
+    Note:
+        Builds from flake: {GITHUB_REPO}#{image_name}.image
     """
     # Extra validation layer before using in subprocess
     validate_image_name(image_name)
@@ -208,9 +329,40 @@ def build_image(image_name: str) -> str:
 @lru_cache(maxsize=config.CACHE_SIZE)
 def load_image_manifest(tar_path: str) -> dict:
     """
-    Load only the manifest and compute metadata WITHOUT loading full blobs into memory.
+    Load image manifest and compute metadata without loading full blobs into memory.
 
-    Returns lightweight metadata with digests and sizes, but not the actual blob data.
+    This function is memory-efficient: it computes digests and sizes but doesn't
+    store layer blob data in the cache. Only the small config blob is kept.
+
+    Args:
+        tar_path: Path to Docker/OCI image tarball (from nix build)
+
+    Returns:
+        Dictionary with structure:
+        {
+            "config": {
+                "name": str,         # Config filename
+                "digest": str,       # sha256:...
+                "size": int,         # Size in bytes
+                "bytes": bytes       # Actual config data (small, ~10KB)
+            },
+            "layers": [
+                {
+                    "name": str,     # Layer filename
+                    "digest": str,   # sha256:...
+                    "size": int      # Size in bytes
+                    # NOTE: No "bytes" field - saves memory!
+                },
+                ...
+            ]
+        }
+
+    Caching:
+        Results are cached with LRU cache (size configurable via CACHE_SIZE).
+        Only metadata is cached, not the actual layer data.
+
+    Performance:
+        For a 500MB image with 10 layers, this caches ~1KB instead of 500MB.
     """
     logger.debug(f"Loading image manifest from {tar_path}")
 
@@ -257,10 +409,30 @@ def load_image_manifest(tar_path: str) -> dict:
 
 def get_blob_from_tar(tar_path: str, digest: str) -> tuple[bytes | None, str | None]:
     """
-    Stream a specific blob from tarfile by digest WITHOUT loading all layers.
+    Stream a specific blob from tarfile by digest without loading all layers.
 
-    Returns (blob_bytes, mimetype) or (None, None) if not found.
-    This avoids loading the entire image into memory.
+    This function searches for a specific blob (config or layer) by its digest
+    and returns only that blob, avoiding the need to load the entire image.
+
+    Args:
+        tar_path: Path to Docker/OCI image tarball
+        digest: SHA256 digest in format "sha256:<64 hex chars>"
+
+    Returns:
+        Tuple of (blob_bytes, mimetype) if found, or (None, None) if not found.
+
+        Mimetypes:
+        - Config: "application/vnd.oci.image.config.v1+json"
+        - Layers: "application/vnd.oci.image.layer.v1.tar+gzip"
+
+    Performance:
+        Streams blobs one at a time. For an image with 10 layers where the
+        requested blob is layer 3, only layers 1-3 are loaded into memory.
+
+    Example:
+        >>> blob, mime = get_blob_from_tar("/nix/store/...", "sha256:abc...")
+        >>> if blob:
+        ...     print(f"Found {len(blob)} bytes of type {mime}")
     """
     logger.debug(f"Searching for blob {digest} in {tar_path}")
 
@@ -297,7 +469,21 @@ def get_blob_from_tar(tar_path: str, digest: str) -> tuple[bytes | None, str | N
 
 @app.route("/v2/")
 def v2_root():
-    """OCI Distribution API root endpoint."""
+    """
+    OCI Distribution API version check endpoint.
+
+    Returns HTTP 200 to indicate the registry supports the OCI Distribution
+    Specification / Docker Registry v2 API.
+
+    Required by OCI spec: clients check this endpoint before attempting
+    to pull images.
+
+    Returns:
+        Response with status 200 and Docker-Distribution-API-Version header
+
+    Headers:
+        Docker-Distribution-API-Version: registry/2.0
+    """
     logger.info("Registry v2 API root accessed")
     resp = Response(status=200)
     resp.headers["Docker-Distribution-API-Version"] = "registry/2.0"
@@ -306,6 +492,58 @@ def v2_root():
 
 @app.route("/v2/<image_name>/manifests/<tag>", methods=["GET", "HEAD"])
 def get_manifest(image_name, tag):
+    """
+    Get or check container image manifest (OCI Distribution Spec).
+
+    Builds the image with Nix (if needed) and returns the manifest in either
+    OCI or Docker format based on the client's Accept header.
+
+    Args:
+        image_name: Name of the image (validated)
+        tag: Image tag (validated)
+
+    Methods:
+        GET: Returns full manifest JSON
+        HEAD: Returns only headers (Content-Length, digest, etc.)
+
+    Request Headers:
+        Accept: Optional. Determines manifest format.
+            - Contains "application/vnd.docker.distribution.manifest": Docker format
+            - Otherwise: OCI format (default)
+
+    Response Headers:
+        Content-Type: application/vnd.oci.image.manifest.v1+json (or Docker variant)
+        Content-Length: Size of manifest in bytes
+        Docker-Content-Digest: SHA256 digest of manifest
+
+    Returns:
+        - GET: JSON manifest with config and layer references
+        - HEAD: Empty body with headers only
+
+    Response Format (OCI):
+        {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": "sha256:...",
+                "size": 1234
+            },
+            "layers": [
+                {
+                    "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+                    "digest": "sha256:...",
+                    "size": 5678
+                }
+            ]
+        }
+
+    Raises:
+        400: Invalid image_name or tag
+        404: Build output not found
+        500: Build failed
+        504: Build timeout
+    """
     validate_image_name(image_name)
     validate_tag(tag)
 
@@ -391,6 +629,46 @@ def get_manifest(image_name, tag):
 
 @app.route("/v2/<image_name>/blobs/<digest>", methods=["GET", "HEAD"])
 def get_blob(image_name, digest):
+    """
+    Get or check a blob (config or layer) by digest (OCI Distribution Spec).
+
+    Retrieves a specific blob from the image tarball without loading all
+    layers into memory. Supports both config blobs and layer blobs.
+
+    Args:
+        image_name: Name of the image (validated)
+        digest: SHA256 digest in format "sha256:<64 hex chars>" (validated)
+
+    Methods:
+        GET: Returns full blob content
+        HEAD: Returns only headers (Content-Length, digest, Content-Type)
+
+    Response Headers:
+        Content-Type:
+            - Config: application/vnd.oci.image.config.v1+json
+            - Layers: application/vnd.oci.image.layer.v1.tar+gzip
+        Content-Length: Size of blob in bytes
+        Docker-Content-Digest: SHA256 digest (echoed from request)
+
+    Returns:
+        - GET: Binary blob content (config JSON or layer tarball)
+        - HEAD: Empty body with headers only
+
+    Performance:
+        Memory-efficient: streams only the requested blob, not the entire image.
+
+    Raises:
+        400: Invalid image_name or digest format
+        404: Blob not found or build output not found
+        500: Build failed
+        504: Build timeout
+
+    Example Flow:
+        1. Client requests: GET /v2/myapp/blobs/sha256:abc123...
+        2. Registry builds image with Nix (or uses cache)
+        3. Registry searches tarball for matching digest
+        4. Registry returns matching blob (config or layer)
+    """
     validate_image_name(image_name)
     validate_digest(digest)
 
