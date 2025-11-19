@@ -7,6 +7,9 @@ import os
 import subprocess
 import logging
 
+from functools import lru_cache
+
+
 # Configure logging
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -68,6 +71,7 @@ def build_image(image_name: str) -> str:
     return tar_path
 
 
+@lru_cache(maxsize=50)
 def load_image_metadata(tar_path: str):
     """Extract manifest.json, config, and layers from a tar.gz."""
     logger.debug(f"Loading image metadata from {tar_path}")
