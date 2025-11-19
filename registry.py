@@ -6,6 +6,7 @@ import io
 import os
 import subprocess
 import logging
+import re
 
 from functools import lru_cache
 
@@ -33,10 +34,63 @@ def compute_sha256(data: bytes) -> str:
     return "sha256:" + h.hexdigest()
 
 
+def validate_image_name(name: str) -> None:
+    """
+    Validate image name to prevent injection attacks.
+
+    Allows only alphanumeric characters, hyphens, underscores, and dots.
+    Raises 400 error if invalid.
+    """
+    if not name or len(name) > 255:
+        logger.warning(f"Invalid image name length: {len(name)}")
+        abort(400, "Invalid image name: must be 1-255 characters")
+
+    if not re.match(r'^[a-zA-Z0-9._-]+$', name):
+        logger.warning(f"Invalid image name format: {name}")
+        abort(400, "Invalid image name: only alphanumeric, dots, hyphens, and underscores allowed")
+
+    logger.debug(f"Image name validated: {name}")
+
+
+def validate_tag(tag: str) -> None:
+    """
+    Validate tag name.
+
+    Allows alphanumeric characters, hyphens, underscores, and dots.
+    Raises 400 error if invalid.
+    """
+    if not tag or len(tag) > 128:
+        logger.warning(f"Invalid tag length: {len(tag)}")
+        abort(400, "Invalid tag: must be 1-128 characters")
+
+    if not re.match(r'^[a-zA-Z0-9._-]+$', tag):
+        logger.warning(f"Invalid tag format: {tag}")
+        abort(400, "Invalid tag: only alphanumeric, dots, hyphens, and underscores allowed")
+
+    logger.debug(f"Tag validated: {tag}")
+
+
+def validate_digest(digest: str) -> None:
+    """
+    Validate SHA256 digest format.
+
+    Must match format: sha256:<64 hex chars>
+    Raises 400 error if invalid.
+    """
+    if not re.match(r'^sha256:[a-f0-9]{64}$', digest):
+        logger.warning(f"Invalid digest format: {digest}")
+        abort(400, "Invalid digest: must be sha256:<64 hex characters>")
+
+    logger.debug(f"Digest validated: {digest}")
+
+
 def build_image(image_name: str) -> str:
     """
     Build image with Nix.
     """
+    # Extra validation layer before using in subprocess
+    validate_image_name(image_name)
+
     logger.info(f"Building image '{image_name}' with Nix ...")
 
     nix_build_cmd = [
@@ -133,6 +187,9 @@ def v2_root():
 
 @app.route("/v2/<image_name>/manifests/<tag>")
 def get_manifest(image_name, tag):
+    validate_image_name(image_name)
+    validate_tag(tag)
+
     logger.info(f"Manifest requested: image='{image_name}', tag='{tag}'")
 
     tar_path = build_image(image_name)
@@ -176,6 +233,9 @@ def get_manifest(image_name, tag):
 
 @app.route("/v2/<image_name>/blobs/<digest>")
 def get_blob(image_name, digest):
+    validate_image_name(image_name)
+    validate_digest(digest)
+
     logger.info(f"Blob requested: image='{image_name}', digest='{digest}'")
 
     tar_path = build_image(image_name)
