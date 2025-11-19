@@ -144,6 +144,7 @@ def build_image(image_name: str) -> str:
 
     # Stream output in debug mode, capture in normal mode
     is_debug = logger.getEffectiveLevel() == logging.DEBUG
+    tar_path = ""
 
     try:
         if is_debug:
