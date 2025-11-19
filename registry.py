@@ -275,14 +275,16 @@ def get_blob_from_tar(tar_path: str, digest: str) -> tuple[bytes | None, str | N
         config_bytes = tar.extractfile(config_name).read()
         if compute_sha256(config_bytes) == digest:
             logger.debug(f"Found config blob: {digest}")
-            return config_bytes, "application/vnd.docker.container.image.v1+json"
+            # Use OCI media type for config
+            return config_bytes, "application/vnd.oci.image.config.v1+json"
 
         # Check layer blobs (stream one at a time)
         for layer_name in layer_files:
             layer_bytes = tar.extractfile(layer_name).read()
             if compute_sha256(layer_bytes) == digest:
                 logger.debug(f"Found layer blob: {digest}")
-                return layer_bytes, "application/octet-stream"
+                # Use OCI media type for layers
+                return layer_bytes, "application/vnd.oci.image.layer.v1.tar+gzip"
 
     logger.debug(f"Blob not found: {digest}")
     return None, None
@@ -295,9 +297,11 @@ def get_blob_from_tar(tar_path: str, digest: str) -> tuple[bytes | None, str | N
 
 @app.route("/v2/")
 def v2_root():
-    """Container image registry v2 API root endpoint."""
+    """OCI Distribution API root endpoint."""
     logger.info("Registry v2 API root accessed")
-    return Response(status=200)
+    resp = Response(status=200)
+    resp.headers["Docker-Distribution-API-Version"] = "registry/2.0"
+    return resp
 
 
 @app.route("/v2/<image_name>/manifests/<tag>", methods=["GET", "HEAD"])
@@ -307,54 +311,80 @@ def get_manifest(image_name, tag):
 
     logger.info(f"Manifest requested: image='{image_name}', tag='{tag}', method={request.method}")
 
+    # Check Accept header to determine manifest format
+    accept_header = request.headers.get("Accept", "")
+    use_docker_format = "application/vnd.docker.distribution.manifest" in accept_header
+
+    logger.debug(f"Accept header: {accept_header}, using Docker format: {use_docker_format}")
+
     tar_path = build_image(image_name)
     meta = load_image_manifest(tar_path)
 
-    manifest = {
-        "schemaVersion": 2,
-        "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-        "config": {
-            "mediaType": "application/vnd.docker.container.image.v1+json",
-            "digest": meta["config"]["digest"],
-            "size": meta["config"]["size"],
-        },
-        "layers": [
-            {
-                "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
-                "digest": layer["digest"],
-                "size": layer["size"],
-            }
-            for layer in meta["layers"]
-        ],
-    }
+    # Build manifest in OCI format (or Docker format for compatibility)
+    if use_docker_format:
+        # Docker Registry v2 format
+        manifest = {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "config": {
+                "mediaType": "application/vnd.docker.container.image.v1+json",
+                "digest": meta["config"]["digest"],
+                "size": meta["config"]["size"],
+            },
+            "layers": [
+                {
+                    "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
+                    "digest": layer["digest"],
+                    "size": layer["size"],
+                }
+                for layer in meta["layers"]
+            ],
+        }
+        content_type = "application/vnd.docker.distribution.manifest.v2+json"
+    else:
+        # OCI format (default)
+        manifest = {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": meta["config"]["digest"],
+                "size": meta["config"]["size"],
+            },
+            "layers": [
+                {
+                    "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+                    "digest": layer["digest"],
+                    "size": layer["size"],
+                }
+                for layer in meta["layers"]
+            ],
+        }
+        content_type = "application/vnd.oci.image.manifest.v1+json"
 
     manifest_bytes = json.dumps(manifest).encode("utf-8")
     manifest_digest = compute_sha256(manifest_bytes)
     logger.debug(
-        f"Manifest digest: {manifest_digest}, size: {len(manifest_bytes)} bytes"
+        f"Manifest digest: {manifest_digest}, size: {len(manifest_bytes)} bytes, format: {content_type}"
     )
 
     # For HEAD requests, return empty body with headers
     if request.method == "HEAD":
         resp = Response(status=200)
-        resp.headers["Content-Type"] = (
-            "application/vnd.docker.distribution.manifest.v2+json"
-        )
+        resp.headers["Content-Type"] = content_type
         resp.headers["Content-Length"] = len(manifest_bytes)
         resp.headers["Docker-Content-Digest"] = manifest_digest
-        logger.info(f"Manifest HEAD: image='{image_name}', tag='{tag}', digest={manifest_digest}")
+        logger.info(f"Manifest HEAD: image='{image_name}', tag='{tag}', digest={manifest_digest}, format={content_type}")
         return resp
 
     # For GET requests, return full manifest
     resp = make_response(manifest_bytes)
-    resp.headers["Content-Type"] = (
-        "application/vnd.docker.distribution.manifest.v2+json"
-    )
+    resp.headers["Content-Type"] = content_type
     resp.headers["Content-Length"] = len(manifest_bytes)
     resp.headers["Docker-Content-Digest"] = manifest_digest
 
     logger.info(
-        f"Manifest sent: image='{image_name}', tag='{tag}', digest={manifest_digest}"
+        f"Manifest sent: image='{image_name}', tag='{tag}', digest={manifest_digest}, format={content_type}"
     )
     return resp
 
