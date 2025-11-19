@@ -2,11 +2,41 @@
 
 An OCI-compliant container registry that builds images on-demand using Nix.
 
-Implements the [OCI Distribution Specification](https://github.com/opencontainers/distribution-spec) with backward compatibility for Docker Registry v2 clients.
+Implements the [OCI Distribution Specification](https://github.com/opencontainers/distribution-spec)
+with backward compatibility for Docker Registry v2 clients.
+
+
+## Quick start
+
+* Launch registry service
+
+```bash
+nix develop
+
+python app.py
+```
+
+* Run container
+
+```bash
+# With Podman
+podman run --rm -it --tls-verify=false --pull=always \
+  localhost:6443/packages/python-web:latest
+
+# With Docker
+docker run --rm -it --pull=always \
+  localhost:6443/packages/python-web:latest
+
+# With K8s
+kubectl run myapp --insecure-skip-tls-verify \
+  --image=<IP-ADDRESS>:6443/applications/myapp/web:latest --port=8080
+```
+
 
 ## Configuration
 
-Configure the registry using environment variables. See `.env.example` for all available options:
+Configure the registry using environment variables. See `.env.example` for all
+available options:
 
 ```bash
 # Logging
@@ -28,26 +58,12 @@ MAX_IMAGE_NAME_LENGTH=255  # Max characters in image name
 MAX_TAG_LENGTH=128         # Max characters in tag
 ```
 
-## Usage
 
-### Run the Registry
-
-```bash
-# Default configuration
-python app.py
-
-# With custom configuration
-LOG_LEVEL=DEBUG FLASK_PORT=8080 python app.py
-
-# Debug mode streams nix build output in real-time
-LOG_LEVEL=DEBUG python app.py
-```
-
-### Image Naming
+## Image naming
 
 The registry supports two image formats:
 
-#### 1. Packages (Single Image)
+### 1. Nix Forge packages
 
 Format: `packages/<package-name>`
 
@@ -58,7 +74,7 @@ podman pull localhost:6443/packages/python-web:latest
 # Runs: nix build github:imincik/flake-forge#python-web.image
 ```
 
-#### 2. Applications (Multiple Images)
+### 2. Nix Forge applications
 
 Format: `applications/<package-name>/<image-name>`
 
@@ -73,20 +89,6 @@ podman pull localhost:6443/applications/myapp/worker:latest
 # Note: Image name in URL doesn't include .tar.gz extension
 ```
 
-### Pull and Run Container
-
-```bash
-# With Podman
-podman run --rm -it --tls-verify=false --pull=always \
-  localhost:6443/packages/python-web:latest
-
-# With Docker
-docker run --rm --pull=always localhost:6443/packages/python-web:latest
-
-# With K8s
-kubectl run myapp --insecure-skip-tls-verify \
-  --image=<IP-ADDRESS>:6443/applications/myapp/web:latest --port=8080
-```
 
 ## Features
 
@@ -98,7 +100,8 @@ kubectl run myapp --insecure-skip-tls-verify \
 - **Input validation**: Prevents injection attacks
 - **Real-time logging**: Debug mode streams nix build output line-by-line
 
-## Manifest Formats
+
+## Manifest formats
 
 The registry supports both OCI and Docker manifest formats:
 
