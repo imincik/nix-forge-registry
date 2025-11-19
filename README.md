@@ -34,13 +34,13 @@ MAX_TAG_LENGTH=128         # Max characters in tag
 
 ```bash
 # Default configuration
-python registry.py
+python app.py
 
 # With custom configuration
-LOG_LEVEL=DEBUG FLASK_PORT=8080 python registry.py
+LOG_LEVEL=DEBUG FLASK_PORT=8080 python app.py
 
 # Debug mode streams nix build output in real-time
-LOG_LEVEL=DEBUG python registry.py
+LOG_LEVEL=DEBUG python app.py
 ```
 
 ### Image Naming

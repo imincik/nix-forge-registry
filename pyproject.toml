@@ -38,14 +38,15 @@ Repository = "https://github.com/imincik/flake-forge-registry"
 Issues = "https://github.com/imincik/flake-forge-registry/issues"
 
 [project.scripts]
-nix-forge-registry = "registry:main"
+nix-forge-registry = "app:main"
 
 [build-system]
 requires = ["setuptools>=68.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["registry"]
+packages = ["registry"]
+py-modules = ["app"]
 
 [tool.black]
 line-length = 100
