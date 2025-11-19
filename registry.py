@@ -11,9 +11,50 @@ import re
 from functools import lru_cache
 
 
+# -------------------------------
+# Configuration
+# -------------------------------
+
+
+class Config:
+    """Registry configuration from environment variables."""
+
+    def __init__(self):
+        # Logging
+        self.LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+        # Server
+        self.FLASK_HOST = os.getenv("FLASK_HOST", "0.0.0.0")
+        self.FLASK_PORT = int(os.getenv("FLASK_PORT", "5000"))
+
+        # Nix build
+        self.GITHUB_REPO = os.getenv("GITHUB_REPO", "github:imincik/flake-forge")
+        self.NIX_BUILD_TIMEOUT = int(os.getenv("NIX_BUILD_TIMEOUT", "600"))  # seconds
+
+        # Cache
+        self.CACHE_SIZE = int(os.getenv("CACHE_SIZE", "50"))
+
+        # Validation limits
+        self.MAX_IMAGE_NAME_LENGTH = int(os.getenv("MAX_IMAGE_NAME_LENGTH", "255"))
+        self.MAX_TAG_LENGTH = int(os.getenv("MAX_TAG_LENGTH", "128"))
+
+    def __repr__(self):
+        """String representation for logging."""
+        return (
+            f"Config(LOG_LEVEL={self.LOG_LEVEL}, "
+            f"FLASK_HOST={self.FLASK_HOST}, "
+            f"FLASK_PORT={self.FLASK_PORT}, "
+            f"GITHUB_REPO={self.GITHUB_REPO}, "
+            f"CACHE_SIZE={self.CACHE_SIZE})"
+        )
+
+
+# Initialize configuration
+config = Config()
+
 # Configure logging
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
+    level=config.LOG_LEVEL,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
@@ -41,9 +82,9 @@ def validate_image_name(name: str) -> None:
     Allows only alphanumeric characters, hyphens, underscores, and dots.
     Raises 400 error if invalid.
     """
-    if not name or len(name) > 255:
+    if not name or len(name) > config.MAX_IMAGE_NAME_LENGTH:
         logger.warning(f"Invalid image name length: {len(name)}")
-        abort(400, "Invalid image name: must be 1-255 characters")
+        abort(400, f"Invalid image name: must be 1-{config.MAX_IMAGE_NAME_LENGTH} characters")
 
     if not re.match(r'^[a-zA-Z0-9._-]+$', name):
         logger.warning(f"Invalid image name format: {name}")
@@ -59,9 +100,9 @@ def validate_tag(tag: str) -> None:
     Allows alphanumeric characters, hyphens, underscores, and dots.
     Raises 400 error if invalid.
     """
-    if not tag or len(tag) > 128:
+    if not tag or len(tag) > config.MAX_TAG_LENGTH:
         logger.warning(f"Invalid tag length: {len(tag)}")
-        abort(400, "Invalid tag: must be 1-128 characters")
+        abort(400, f"Invalid tag: must be 1-{config.MAX_TAG_LENGTH} characters")
 
     if not re.match(r'^[a-zA-Z0-9._-]+$', tag):
         logger.warning(f"Invalid tag format: {tag}")
@@ -96,7 +137,7 @@ def build_image(image_name: str) -> str:
     nix_build_cmd = [
         "nix",
         "build",
-        f"github:imincik/flake-forge#{image_name}.image",
+        f"{config.GITHUB_REPO}#{image_name}.image",
         "--print-out-paths",
     ]
     logger.debug(f"Running command: {' '.join(nix_build_cmd)}")
@@ -107,7 +148,11 @@ def build_image(image_name: str) -> str:
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            timeout=config.NIX_BUILD_TIMEOUT,
         )
+    except subprocess.TimeoutExpired:
+        logger.error(f"Nix build timed out for image '{image_name}' after {config.NIX_BUILD_TIMEOUT}s")
+        abort(504, f"Build timeout: image '{image_name}' took too long to build")
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr.decode()
         logger.error(f"Nix build failed for image '{image_name}': {error_msg}")
@@ -125,7 +170,7 @@ def build_image(image_name: str) -> str:
     return tar_path
 
 
-@lru_cache(maxsize=50)
+@lru_cache(maxsize=config.CACHE_SIZE)
 def load_image_manifest(tar_path: str) -> dict:
     """
     Load only the manifest and compute metadata WITHOUT loading full blobs into memory.
@@ -298,8 +343,9 @@ def get_blob(image_name, digest):
 
 if __name__ == "__main__":
     debug_mode = logger.getEffectiveLevel() == logging.DEBUG
-    logger.info("Starting container registry service on 0.0.0.0:5000")
+    logger.info(f"Starting container registry service on {config.FLASK_HOST}:{config.FLASK_PORT}")
+    logger.info(f"Configuration: {config}")
     logger.info(f"Log level: {logging.getLevelName(logger.getEffectiveLevel())}")
     if debug_mode:
         logger.info("Flask debug mode enabled")
-    app.run(host="0.0.0.0", port=5000, debug=debug_mode)
+    app.run(host=config.FLASK_HOST, port=config.FLASK_PORT, debug=debug_mode)
