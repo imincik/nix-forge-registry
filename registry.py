@@ -1,4 +1,4 @@
-from flask import Flask, send_file, abort, Response, make_response
+from flask import Flask, send_file, abort, Response, make_response, request
 import tarfile
 import json
 import hashlib
@@ -300,12 +300,12 @@ def v2_root():
     return Response(status=200)
 
 
-@app.route("/v2/<image_name>/manifests/<tag>")
+@app.route("/v2/<image_name>/manifests/<tag>", methods=["GET", "HEAD"])
 def get_manifest(image_name, tag):
     validate_image_name(image_name)
     validate_tag(tag)
 
-    logger.info(f"Manifest requested: image='{image_name}', tag='{tag}'")
+    logger.info(f"Manifest requested: image='{image_name}', tag='{tag}', method={request.method}")
 
     tar_path = build_image(image_name)
     meta = load_image_manifest(tar_path)
@@ -334,10 +334,23 @@ def get_manifest(image_name, tag):
         f"Manifest digest: {manifest_digest}, size: {len(manifest_bytes)} bytes"
     )
 
+    # For HEAD requests, return empty body with headers
+    if request.method == "HEAD":
+        resp = Response(status=200)
+        resp.headers["Content-Type"] = (
+            "application/vnd.docker.distribution.manifest.v2+json"
+        )
+        resp.headers["Content-Length"] = len(manifest_bytes)
+        resp.headers["Docker-Content-Digest"] = manifest_digest
+        logger.info(f"Manifest HEAD: image='{image_name}', tag='{tag}', digest={manifest_digest}")
+        return resp
+
+    # For GET requests, return full manifest
     resp = make_response(manifest_bytes)
     resp.headers["Content-Type"] = (
         "application/vnd.docker.distribution.manifest.v2+json"
     )
+    resp.headers["Content-Length"] = len(manifest_bytes)
     resp.headers["Docker-Content-Digest"] = manifest_digest
 
     logger.info(
@@ -346,12 +359,12 @@ def get_manifest(image_name, tag):
     return resp
 
 
-@app.route("/v2/<image_name>/blobs/<digest>")
+@app.route("/v2/<image_name>/blobs/<digest>", methods=["GET", "HEAD"])
 def get_blob(image_name, digest):
     validate_image_name(image_name)
     validate_digest(digest)
 
-    logger.info(f"Blob requested: image='{image_name}', digest='{digest}'")
+    logger.info(f"Blob requested: image='{image_name}', digest='{digest}', method={request.method}")
 
     tar_path = build_image(image_name)
 
@@ -362,11 +375,24 @@ def get_blob(image_name, digest):
         logger.warning(f"Blob not found: image='{image_name}', digest='{digest}'")
         abort(404)
 
-    logger.debug(f"Serving blob: {digest}, size: {len(blob_bytes)} bytes")
+    blob_size = len(blob_bytes)
+    logger.debug(f"Serving blob: {digest}, size: {blob_size} bytes")
+
+    # For HEAD requests, return headers only
+    if request.method == "HEAD":
+        resp = Response(status=200)
+        resp.headers["Content-Type"] = mimetype
+        resp.headers["Content-Length"] = blob_size
+        resp.headers["Docker-Content-Digest"] = digest
+        logger.info(f"Blob HEAD: image='{image_name}', digest='{digest}'")
+        return resp
+
+    # For GET requests, return full blob
     resp = send_file(
         io.BytesIO(blob_bytes),
         mimetype=mimetype,
     )
+    resp.headers["Content-Length"] = blob_size
     resp.headers["Docker-Content-Digest"] = digest
     logger.info(f"Blob sent: image='{image_name}', digest='{digest}'")
     return resp
