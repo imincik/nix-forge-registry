@@ -43,16 +43,49 @@ LOG_LEVEL=DEBUG FLASK_PORT=8080 python registry.py
 LOG_LEVEL=DEBUG python registry.py
 ```
 
-### Pull Container with Podman
+### Image Naming
+
+The registry supports two image formats:
+
+#### 1. Packages (Single Image)
+
+Format: `packages/<package-name>`
 
 ```bash
-podman run -it --tls-verify=false --pull=always localhost:5000/<PACKAGE>:latest
+# Pull a package image
+podman pull localhost:5000/packages/python-web:latest
+
+# Runs: nix build github:imincik/flake-forge#python-web.image
 ```
 
-### Run Container with K8s
+#### 2. Applications (Multiple Images)
+
+Format: `applications/<package-name>/<image-name>`
 
 ```bash
-kubectl run test-api --insecure-skip-tls-verify --image=<IP-ADDRESS>:5000/<PACKAGE>:latest --port=5000
+# Pull specific image from an application (without .tar.gz extension)
+podman pull localhost:5000/applications/myapp/web:latest
+podman pull localhost:5000/applications/myapp/worker:latest
+
+# Runs: nix build github:imincik/flake-forge#myapp.containers
+# Serves: /nix/store/.../web.tar.gz
+#         /nix/store/.../worker.tar.gz
+# Note: Image name in URL doesn't include .tar.gz extension
+```
+
+### Pull and Run Container
+
+```bash
+# With Podman
+podman run --rm -it --tls-verify=false --pull=always \
+  localhost:5000/packages/python-web:latest
+
+# With Docker
+docker run --rm --pull=always localhost:5000/packages/python-web:latest
+
+# With K8s
+kubectl run myapp --insecure-skip-tls-verify \
+  --image=<IP-ADDRESS>:5000/applications/myapp/web:latest --port=8080
 ```
 
 ## Features

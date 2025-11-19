@@ -9,19 +9,34 @@ Features:
     - OCI Distribution Specification compliant
     - Docker Registry v2 API compatible
     - On-demand image building with Nix
+    - Support for single-image packages and multi-image applications
     - Memory-efficient blob streaming
     - LRU caching for manifest metadata
     - Comprehensive input validation
     - Configurable via environment variables
     - Real-time build output streaming in debug mode
 
+Image Formats:
+    1. Packages (single image):
+       Format: packages/<package>
+       Builds: nix build {repo}#{package}.image
+       Example: packages/python-web
+
+    2. Applications (multiple images):
+       Format: applications/<package>/<image>
+       Builds: nix build {repo}#{package}.containers
+       Serves: {output}/{image}.tar.gz (extension added automatically)
+       Example: applications/myapp/web (serves web.tar.gz)
+
 Architecture:
     1. Client requests manifest (GET /v2/<name>/manifests/<tag>)
-    2. Registry builds image using Nix if not cached
-    3. Registry extracts and caches manifest metadata
-    4. Registry returns manifest in OCI or Docker format
-    5. Client requests blobs (GET /v2/<name>/blobs/<digest>)
-    6. Registry streams requested blobs from tarball
+    2. Registry parses image name to determine type
+    3. Registry builds package or application using Nix
+    4. For applications, locates specific image in output directory
+    5. Registry extracts and caches manifest metadata
+    6. Registry returns manifest in OCI or Docker format
+    7. Client requests blobs (GET /v2/<name>/blobs/<digest>)
+    8. Registry streams requested blobs from tarball
 
 OCI Endpoints:
     - GET /v2/ - Version check
@@ -34,7 +49,8 @@ Environment Variables:
 
 Example:
     $ LOG_LEVEL=DEBUG python registry.py
-    $ podman pull localhost:5000/myimage:latest
+    $ podman pull localhost:5000/packages/python-web:latest
+    $ podman pull localhost:5000/applications/myapp/web:latest
 
 See README.md for full documentation.
 """
@@ -151,26 +167,36 @@ def validate_image_name(name: str) -> None:
     Validate image name to prevent injection attacks.
 
     Args:
-        name: Image name to validate
+        name: Image name to validate (e.g., "packages/python-web" or "applications/myapp/web")
 
     Raises:
         HTTPException: 400 Bad Request if name is invalid
 
     Validation Rules:
         - Must be 1-{MAX_IMAGE_NAME_LENGTH} characters (configurable)
-        - Only alphanumeric characters, dots (.), hyphens (-), and underscores (_)
-        - No special characters or path separators allowed
+        - Only alphanumeric characters, dots (.), hyphens (-), underscores (_), and slashes (/)
+        - Must start with "packages/" or "applications/" (enforced by parse_image_name)
+        - No special characters that could enable command injection
+
+    Note:
+        This validates character set only. Format validation (prefix requirement)
+        is done by parse_image_name().
 
     Security:
         Prevents command injection when used in subprocess calls to Nix.
+
+    Examples:
+        >>> validate_image_name("packages/python-web")  # OK
+        >>> validate_image_name("applications/app/web")  # OK
+        >>> validate_image_name("pkg;rm -rf")  # Raises 400 (semicolon)
     """
     if not name or len(name) > config.MAX_IMAGE_NAME_LENGTH:
         logger.warning(f"Invalid image name length: {len(name)}")
         abort(400, f"Invalid image name: must be 1-{config.MAX_IMAGE_NAME_LENGTH} characters")
 
-    if not re.match(r'^[a-zA-Z0-9._-]+$', name):
+    if not re.match(r'^[a-zA-Z0-9._/-]+$', name):
         logger.warning(f"Invalid image name format: {name}")
-        abort(400, "Invalid image name: only alphanumeric, dots, hyphens, and underscores allowed")
+        abort(400, "Invalid image name: only alphanumeric, dots, hyphens, underscores, and slashes allowed")
 
     logger.debug(f"Image name validated: {name}")
 
@@ -225,47 +251,101 @@ def validate_digest(digest: str) -> None:
     logger.debug(f"Digest validated: {digest}")
 
 
-def build_image(image_name: str) -> str:
+def parse_image_name(image_name: str) -> dict:
     """
-    Build container image using Nix and return path to tarball.
+    Parse image name to determine type and extract components.
+
+    Supports two formats:
+    1. packages/<package> - Single image from .image output
+    2. applications/<package>/<image> - Multi-image from .containers output
+       (image name specified without .tar.gz extension)
 
     Args:
-        image_name: Name of the image to build (validated before use)
+        image_name: Image name in format "packages/..." or "applications/..."
 
     Returns:
-        Absolute path to the built image tarball in Nix store
+        Dictionary with structure:
+        - For packages: {"type": "package", "package": "<package>", "image": None}
+        - For applications: {"type": "application", "package": "<package>", "image": "<image>"}
 
     Raises:
-        HTTPException: 400 if image_name is invalid
-        HTTPException: 404 if build output not found
-        HTTPException: 500 if Nix build fails
+        HTTPException: 400 if format is invalid or missing required prefix
+
+    Note:
+        For applications, the image name is specified WITHOUT .tar.gz extension.
+        The build_image() function will automatically append .tar.gz when looking
+        for the file in the containers directory.
+
+    Examples:
+        >>> parse_image_name("packages/python-web")
+        {'type': 'package', 'package': 'python-web', 'image': None}
+
+        >>> parse_image_name("applications/myapp/web")
+        {'type': 'application', 'package': 'myapp', 'image': 'web'}
+        # Will serve: /nix/store/.../web.tar.gz
+    """
+    # Check for packages/ prefix
+    if image_name.startswith("packages/"):
+        package = image_name[len("packages/"):]
+        if not package:
+            logger.warning(f"Empty package name in: {image_name}")
+            abort(400, "Invalid format: packages/<package> required")
+        if "/" in package:
+            logger.warning(f"Invalid package name with slash: {image_name}")
+            abort(400, "Invalid format: packages/<package> should not contain additional slashes")
+        return {"type": "package", "package": package, "image": None}
+
+    # Check for applications/ prefix
+    if image_name.startswith("applications/"):
+        remainder = image_name[len("applications/"):]
+        parts = remainder.split("/")
+        if len(parts) != 2:
+            logger.warning(f"Invalid applications format: {image_name}")
+            abort(400, "Invalid format: applications/<package>/<image> required")
+        package, image = parts
+        if not package or not image:
+            logger.warning(f"Empty component in: {image_name}")
+            abort(400, "Invalid format: both package and image must be non-empty")
+        return {"type": "application", "package": package, "image": image}
+
+    # No valid prefix found
+    logger.warning(f"Image name missing required prefix: {image_name}")
+    abort(400, "Invalid format: image name must start with 'packages/' or 'applications/'")
+
+
+def run_nix_build(flake_ref: str, description: str = "image") -> str:
+    """
+    Run nix build command and return output path.
+
+    Args:
+        flake_ref: Nix flake reference (e.g., "github:user/repo#package.image")
+        description: Human-readable description for logging (e.g., "image", "containers")
+
+    Returns:
+        Absolute path to the Nix store output (file or directory)
+
+    Raises:
+        HTTPException: 500 if build fails
         HTTPException: 504 if build times out
 
     Behavior:
         - In DEBUG mode: streams build output line-by-line to logs
         - In normal mode: captures output silently
         - Respects NIX_BUILD_TIMEOUT configuration
-        - Validates image_name to prevent command injection
-
-    Note:
-        Builds from flake: {GITHUB_REPO}#{image_name}.image
     """
-    # Extra validation layer before using in subprocess
-    validate_image_name(image_name)
-
-    logger.info(f"Building image '{image_name}' with Nix ...")
+    logger.info(f"Building {description} with Nix: {flake_ref}")
 
     nix_build_cmd = [
         "nix",
         "build",
-        f"{config.GITHUB_REPO}#{image_name}.image",
+        flake_ref,
         "--print-out-paths",
     ]
     logger.debug(f"Running command: {' '.join(nix_build_cmd)}")
 
     # Stream output in debug mode, capture in normal mode
     is_debug = logger.getEffectiveLevel() == logging.DEBUG
-    tar_path = ""
+    output_path = ""
 
     try:
         if is_debug:
@@ -288,14 +368,14 @@ def build_image(image_name: str) -> str:
             return_code = process.wait(timeout=config.NIX_BUILD_TIMEOUT)
 
             if return_code != 0:
-                logger.error(f"Nix build failed for image '{image_name}' with exit code {return_code}")
-                abort(500, f"Failed to build image '{image_name}'")
+                logger.error(f"Nix build failed with exit code {return_code}")
+                abort(500, f"Failed to build {description}")
 
             # The last line should be the output path
             if not output_lines:
-                logger.error(f"Nix build produced no output for image '{image_name}'")
-                abort(500, f"Failed to build image '{image_name}': no output")
-            tar_path = output_lines[-1].strip()
+                logger.error(f"Nix build produced no output")
+                abort(500, f"Failed to build {description}: no output")
+            output_path = output_lines[-1].strip()
         else:
             # Normal mode: capture output without streaming
             nix_cmd = subprocess.run(
@@ -305,25 +385,122 @@ def build_image(image_name: str) -> str:
                 stderr=subprocess.PIPE,
                 timeout=config.NIX_BUILD_TIMEOUT,
             )
-            tar_path = nix_cmd.stdout.decode().strip()
+            output_path = nix_cmd.stdout.decode().strip()
 
     except subprocess.TimeoutExpired:
-        logger.error(f"Nix build timed out for image '{image_name}' after {config.NIX_BUILD_TIMEOUT}s")
-        abort(504, f"Build timeout: image '{image_name}' took too long to build")
+        logger.error(f"Nix build timed out after {config.NIX_BUILD_TIMEOUT}s")
+        abort(504, f"Build timeout: {description} took too long to build")
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr.decode()
-        logger.error(f"Nix build failed for image '{image_name}': {error_msg}")
-        abort(500, f"Failed to build image '{image_name}'")
+        logger.error(f"Nix build failed: {error_msg}")
+        abort(500, f"Failed to build {description}")
 
-    logger.debug(f"Nix build output path: {tar_path}")
+    logger.debug(f"Nix build output path: {output_path}")
 
-    # After build, look for resulting tarball
-    if not os.path.exists(tar_path):
-        logger.error(f"Expected build output not found: {tar_path}")
-        abort(404, f"Expected build output not found: {tar_path}")
+    # Verify output exists
+    if not os.path.exists(output_path):
+        logger.error(f"Expected build output not found: {output_path}")
+        abort(404, f"Expected build output not found: {output_path}")
 
-    logger.info(f"Image '{image_name}' ready at {tar_path}")
-    return tar_path
+    logger.info(f"Build complete: {output_path}")
+    return output_path
+
+
+def build_image(image_name: str) -> str:
+    """
+    Build container image using Nix and return path to tarball.
+
+    Supports two formats:
+    1. packages/<package> - Builds {GITHUB_REPO}#{package}.image
+    2. applications/<package>/<image> - Builds {GITHUB_REPO}#{package}.containers,
+       then finds {image} tarball file in the output directory
+
+    Args:
+        image_name: Image name in format "packages/..." or "applications/..."
+
+    Returns:
+        Absolute path to the image tarball in Nix store
+
+    Raises:
+        HTTPException: 400 if image_name format is invalid
+        HTTPException: 404 if build output or image not found
+        HTTPException: 500 if Nix build fails
+        HTTPException: 504 if build times out
+
+    Directory Structure:
+        Packages: {nix_output} is the tarball file directly
+        Applications: {nix_output}/ contains multiple tarball files
+            ├── web.tar.gz       (tarball file)
+            ├── worker.tar.gz    (tarball file)
+            └── api.tar.gz       (tarball file)
+
+    Note:
+        For applications, the image name is specified WITHOUT the .tar.gz extension
+        in the URL, but the registry automatically appends it when looking for the file.
+
+    Examples:
+        >>> build_image("packages/python-web")
+        '/nix/store/.../image.tar.gz'
+
+        >>> build_image("applications/myapp/web")
+        '/nix/store/.../web.tar.gz'
+    """
+    # Validate and parse image name
+    validate_image_name(image_name)
+    parsed = parse_image_name(image_name)
+
+    if parsed["type"] == "package":
+        # Build single image: nix build {repo}#{package}.image
+        package = parsed["package"]
+        flake_ref = f"{config.GITHUB_REPO}#{package}.image"
+        tar_path = run_nix_build(flake_ref, f"package '{package}'")
+
+        # Verify it's a file (tarball)
+        if not os.path.isfile(tar_path):
+            logger.error(f"Expected tarball file, got: {tar_path}")
+            abort(500, f"Build output is not a file: {tar_path}")
+
+        logger.info(f"Package '{package}' ready at {tar_path}")
+        return tar_path
+
+    elif parsed["type"] == "application":
+        # Build multi-image: nix build {repo}#{package}.containers
+        package = parsed["package"]
+        image = parsed["image"]
+        flake_ref = f"{config.GITHUB_REPO}#{package}.containers"
+        containers_dir = run_nix_build(flake_ref, f"application '{package}'")
+
+        # Verify it's a directory
+        if not os.path.isdir(containers_dir):
+            logger.error(f"Expected directory, got: {containers_dir}")
+            abort(500, f"Build output is not a directory: {containers_dir}")
+
+        # Look for {image}.tar.gz (add extension automatically)
+        tar_path = os.path.join(containers_dir, f"{image}.tar.gz")
+        if not os.path.exists(tar_path):
+            logger.error(f"Image '{image}.tar.gz' not found in {containers_dir}")
+            # List available images for debugging
+            try:
+                available = [f for f in os.listdir(containers_dir)
+                           if os.path.isfile(os.path.join(containers_dir, f)) and f.endswith('.tar.gz')]
+                # Strip .tar.gz for display
+                available_names = [f[:-7] for f in available]
+                logger.error(f"Available images: {available_names}")
+            except Exception:
+                pass
+            abort(404, f"Image '{image}' not found in application '{package}'")
+
+        # Verify it's a file
+        if not os.path.isfile(tar_path):
+            logger.error(f"Expected tarball file, got: {tar_path}")
+            abort(500, f"Image path is not a file: {tar_path}")
+
+        logger.info(f"Application '{package}' image '{image}' ready at {tar_path}")
+        return tar_path
+
+    else:
+        # Should never reach here due to parse_image_name validation
+        abort(500, "Internal error: unknown image type")
 
 
 @lru_cache(maxsize=config.CACHE_SIZE)
@@ -490,7 +667,7 @@ def v2_root():
     return resp
 
 
-@app.route("/v2/<image_name>/manifests/<tag>", methods=["GET", "HEAD"])
+@app.route("/v2/<path:image_name>/manifests/<tag>", methods=["GET", "HEAD"])
 def get_manifest(image_name, tag):
     """
     Get or check container image manifest (OCI Distribution Spec).
@@ -627,7 +804,7 @@ def get_manifest(image_name, tag):
     return resp
 
 
-@app.route("/v2/<image_name>/blobs/<digest>", methods=["GET", "HEAD"])
+@app.route("/v2/<path:image_name>/blobs/<digest>", methods=["GET", "HEAD"])
 def get_blob(image_name, digest):
     """
     Get or check a blob (config or layer) by digest (OCI Distribution Spec).
