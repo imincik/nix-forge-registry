@@ -289,10 +289,10 @@ def parse_image_name(image_name: str) -> dict:
         package = image_name[len("packages/"):]
         if not package:
             logger.warning(f"Empty package name in: {image_name}")
-            abort(400, "Invalid format: packages/<package> required")
+            abort(400, "Invalid format: packages/<package> required. Example: packages/python-web")
         if "/" in package:
             logger.warning(f"Invalid package name with slash: {image_name}")
-            abort(400, "Invalid format: packages/<package> should not contain additional slashes")
+            abort(400, "Invalid format: packages/<package> should not contain additional slashes. Example: packages/python-web")
         return {"type": "package", "package": package, "image": None}
 
     # Check for applications/ prefix
@@ -301,16 +301,20 @@ def parse_image_name(image_name: str) -> dict:
         parts = remainder.split("/")
         if len(parts) != 2:
             logger.warning(f"Invalid applications format: {image_name}")
-            abort(400, "Invalid format: applications/<package>/<image> required")
+            abort(400, "Invalid format: applications/<package>/<image> required. Example: applications/myapp/web")
         package, image = parts
         if not package or not image:
             logger.warning(f"Empty component in: {image_name}")
-            abort(400, "Invalid format: both package and image must be non-empty")
+            abort(400, "Invalid format: both package and image must be non-empty. Example: applications/myapp/web")
         return {"type": "application", "package": package, "image": image}
 
     # No valid prefix found
     logger.warning(f"Image name missing required prefix: {image_name}")
-    abort(400, "Invalid format: image name must start with 'packages/' or 'applications/'")
+    abort(400,
+          "Invalid format: image name must start with 'packages/' or 'applications/'. "
+          "Valid formats:\n"
+          "  - packages/<package>              (example: packages/python-web)\n"
+          "  - applications/<package>/<image>  (example: applications/myapp/web)")
 
 
 def run_nix_build(flake_ref: str, description: str = "image") -> str:
