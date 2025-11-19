@@ -126,9 +126,13 @@ def build_image(image_name: str) -> str:
 
 
 @lru_cache(maxsize=50)
-def load_image_metadata(tar_path: str):
-    """Extract manifest.json, config, and layers from a tar.gz."""
-    logger.debug(f"Loading image metadata from {tar_path}")
+def load_image_manifest(tar_path: str) -> dict:
+    """
+    Load only the manifest and compute metadata WITHOUT loading full blobs into memory.
+
+    Returns lightweight metadata with digests and sizes, but not the actual blob data.
+    """
+    logger.debug(f"Loading image manifest from {tar_path}")
 
     with tarfile.open(tar_path, "r:gz") as tar:
         manifest_member = tar.getmember("manifest.json")
@@ -138,39 +142,70 @@ def load_image_metadata(tar_path: str):
         layer_files = manifest_data["Layers"]
         logger.debug(f"Found config: {config_name}, layers: {len(layer_files)}")
 
+        # Only read config to compute digest and size
         config_bytes = tar.extractfile(config_name).read()
         config_digest = compute_sha256(config_bytes)
         logger.debug(f"Config digest: {config_digest}, size: {len(config_bytes)} bytes")
 
+        # Build lightweight layer metadata (NO bytes stored)
         layers = []
+        total_size = len(config_bytes)
         for idx, layer_name in enumerate(layer_files, 1):
             layer_bytes = tar.extractfile(layer_name).read()
             digest = compute_sha256(layer_bytes)
-            logger.debug(
-                f"Layer {idx}/{len(layer_files)}: {digest}, size: {len(layer_bytes)} bytes"
-            )
-            layers.append(
-                {
-                    "name": layer_name,
-                    "digest": digest,
-                    "size": len(layer_bytes),
-                    "bytes": layer_bytes,
-                }
-            )
+            size = len(layer_bytes)
+            total_size += size
+            logger.debug(f"Layer {idx}/{len(layer_files)}: {digest}, size: {size} bytes")
+            layers.append({
+                "name": layer_name,
+                "digest": digest,
+                "size": size,
+            })
 
-        logger.info(
-            f"Loaded metadata: {len(layers)} layers, total size: {sum(l['size'] for l in layers) + len(config_bytes)} bytes"
-        )
+        logger.info(f"Loaded manifest: {len(layers)} layers, total size: {total_size} bytes")
 
         return {
             "config": {
                 "name": config_name,
                 "digest": config_digest,
                 "size": len(config_bytes),
-                "bytes": config_bytes,
+                "bytes": config_bytes,  # Keep config in memory (small)
             },
             "layers": layers,
         }
+
+
+def get_blob_from_tar(tar_path: str, digest: str) -> tuple[bytes | None, str | None]:
+    """
+    Stream a specific blob from tarfile by digest WITHOUT loading all layers.
+
+    Returns (blob_bytes, mimetype) or (None, None) if not found.
+    This avoids loading the entire image into memory.
+    """
+    logger.debug(f"Searching for blob {digest} in {tar_path}")
+
+    with tarfile.open(tar_path, "r:gz") as tar:
+        manifest_member = tar.getmember("manifest.json")
+        manifest_data = json.load(tar.extractfile(manifest_member))[0]
+
+        config_name = manifest_data["Config"]
+        layer_files = manifest_data["Layers"]
+
+        # Check config blob
+        config_bytes = tar.extractfile(config_name).read()
+        if compute_sha256(config_bytes) == digest:
+            logger.debug(f"Found config blob: {digest}")
+            return config_bytes, "application/vnd.docker.container.image.v1+json"
+
+        # Check layer blobs (stream one at a time)
+        for layer_name in layer_files:
+            layer_bytes = tar.extractfile(layer_name).read()
+            if compute_sha256(layer_bytes) == digest:
+                logger.debug(f"Found layer blob: {digest}")
+                return layer_bytes, "application/octet-stream"
+
+    logger.debug(f"Blob not found: {digest}")
+    return None, None
 
 
 # -------------------------------
@@ -193,7 +228,7 @@ def get_manifest(image_name, tag):
     logger.info(f"Manifest requested: image='{image_name}', tag='{tag}'")
 
     tar_path = build_image(image_name)
-    meta = load_image_metadata(tar_path)
+    meta = load_image_manifest(tar_path)
 
     manifest = {
         "schemaVersion": 2,
@@ -239,35 +274,22 @@ def get_blob(image_name, digest):
     logger.info(f"Blob requested: image='{image_name}', digest='{digest}'")
 
     tar_path = build_image(image_name)
-    meta = load_image_metadata(tar_path)
 
-    # Config blob
-    if digest == meta["config"]["digest"]:
-        logger.debug(
-            f"Serving config blob: {digest}, size: {meta['config']['size']} bytes"
-        )
-        resp = send_file(
-            io.BytesIO(meta["config"]["bytes"]),
-            mimetype="application/vnd.docker.container.image.v1+json",
-        )
-        resp.headers["Docker-Content-Digest"] = digest
-        logger.info(f"Config blob sent: image='{image_name}', digest='{digest}'")
-        return resp
+    # Stream blob directly from tar without loading all layers
+    blob_bytes, mimetype = get_blob_from_tar(tar_path, digest)
 
-    # Layer blobs
-    for layer in meta["layers"]:
-        if digest == layer["digest"]:
-            logger.debug(f"Serving layer blob: {digest}, size: {layer['size']} bytes")
-            resp = send_file(
-                io.BytesIO(layer["bytes"]),
-                mimetype="application/octet-stream",
-            )
-            resp.headers["Docker-Content-Digest"] = digest
-            logger.info(f"Layer blob sent: image='{image_name}', digest='{digest}'")
-            return resp
+    if blob_bytes is None:
+        logger.warning(f"Blob not found: image='{image_name}', digest='{digest}'")
+        abort(404)
 
-    logger.warning(f"Blob not found: image='{image_name}', digest='{digest}'")
-    abort(404)
+    logger.debug(f"Serving blob: {digest}, size: {len(blob_bytes)} bytes")
+    resp = send_file(
+        io.BytesIO(blob_bytes),
+        mimetype=mimetype,
+    )
+    resp.headers["Docker-Content-Digest"] = digest
+    logger.info(f"Blob sent: image='{image_name}', digest='{digest}'")
+    return resp
 
 
 # -------------------------------
