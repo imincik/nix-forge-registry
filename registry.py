@@ -142,14 +142,49 @@ def build_image(image_name: str) -> str:
     ]
     logger.debug(f"Running command: {' '.join(nix_build_cmd)}")
 
+    # Stream output in debug mode, capture in normal mode
+    is_debug = logger.getEffectiveLevel() == logging.DEBUG
+
     try:
-        nix_cmd = subprocess.run(
-            nix_build_cmd,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=config.NIX_BUILD_TIMEOUT,
-        )
+        if is_debug:
+            # Stream output line-by-line in debug mode
+            process = subprocess.Popen(
+                nix_build_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # Merge stderr into stdout
+                text=True,
+                bufsize=1,  # Line buffered
+            )
+
+            output_lines = []
+            for line in process.stdout:
+                line = line.rstrip()
+                if line:  # Only log non-empty lines
+                    logger.debug(f"[nix] {line}")
+                    output_lines.append(line)
+
+            return_code = process.wait(timeout=config.NIX_BUILD_TIMEOUT)
+
+            if return_code != 0:
+                logger.error(f"Nix build failed for image '{image_name}' with exit code {return_code}")
+                abort(500, f"Failed to build image '{image_name}'")
+
+            # The last line should be the output path
+            if not output_lines:
+                logger.error(f"Nix build produced no output for image '{image_name}'")
+                abort(500, f"Failed to build image '{image_name}': no output")
+            tar_path = output_lines[-1].strip()
+        else:
+            # Normal mode: capture output without streaming
+            nix_cmd = subprocess.run(
+                nix_build_cmd,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=config.NIX_BUILD_TIMEOUT,
+            )
+            tar_path = nix_cmd.stdout.decode().strip()
+
     except subprocess.TimeoutExpired:
         logger.error(f"Nix build timed out for image '{image_name}' after {config.NIX_BUILD_TIMEOUT}s")
         abort(504, f"Build timeout: image '{image_name}' took too long to build")
@@ -158,7 +193,6 @@ def build_image(image_name: str) -> str:
         logger.error(f"Nix build failed for image '{image_name}': {error_msg}")
         abort(500, f"Failed to build image '{image_name}'")
 
-    tar_path = nix_cmd.stdout.decode().strip()
     logger.debug(f"Nix build output path: {tar_path}")
 
     # After build, look for resulting tarball
