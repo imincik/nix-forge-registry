@@ -14,7 +14,7 @@ LOG_LEVEL=INFO              # DEBUG, INFO, WARNING, ERROR
 
 # Server
 FLASK_HOST=0.0.0.0         # Bind address
-FLASK_PORT=5000            # Bind port
+FLASK_PORT=6443            # Bind port
 
 # Nix Build
 GITHUB_REPO=github:imincik/flake-forge  # Nix flake repository
@@ -53,7 +53,7 @@ Format: `packages/<package-name>`
 
 ```bash
 # Pull a package image
-podman pull localhost:5000/packages/python-web:latest
+podman pull localhost:6443/packages/python-web:latest
 
 # Runs: nix build github:imincik/flake-forge#python-web.image
 ```
@@ -64,8 +64,8 @@ Format: `applications/<package-name>/<image-name>`
 
 ```bash
 # Pull specific image from an application (without .tar.gz extension)
-podman pull localhost:5000/applications/myapp/web:latest
-podman pull localhost:5000/applications/myapp/worker:latest
+podman pull localhost:6443/applications/myapp/web:latest
+podman pull localhost:6443/applications/myapp/worker:latest
 
 # Runs: nix build github:imincik/flake-forge#myapp.containers
 # Serves: /nix/store/.../web.tar.gz
@@ -78,14 +78,14 @@ podman pull localhost:5000/applications/myapp/worker:latest
 ```bash
 # With Podman
 podman run --rm -it --tls-verify=false --pull=always \
-  localhost:5000/packages/python-web:latest
+  localhost:6443/packages/python-web:latest
 
 # With Docker
-docker run --rm --pull=always localhost:5000/packages/python-web:latest
+docker run --rm --pull=always localhost:6443/packages/python-web:latest
 
 # With K8s
 kubectl run myapp --insecure-skip-tls-verify \
-  --image=<IP-ADDRESS>:5000/applications/myapp/web:latest --port=8080
+  --image=<IP-ADDRESS>:6443/applications/myapp/web:latest --port=8080
 ```
 
 ## Features

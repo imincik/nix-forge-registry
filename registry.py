@@ -49,8 +49,8 @@ Environment Variables:
 
 Example:
     $ LOG_LEVEL=DEBUG python registry.py
-    $ podman pull localhost:5000/packages/python-web:latest
-    $ podman pull localhost:5000/applications/myapp/web:latest
+    $ podman pull localhost:6443/packages/python-web:latest
+    $ podman pull localhost:6443/applications/myapp/web:latest
 
 See README.md for full documentation.
 """
@@ -88,7 +88,7 @@ class Config:
         Environment Variables:
             LOG_LEVEL: Logging level (DEBUG, INFO, WARNING, ERROR). Default: INFO
             FLASK_HOST: Server bind address. Default: 0.0.0.0
-            FLASK_PORT: Server bind port. Default: 5000
+            FLASK_PORT: Server bind port. Default: 6443
             GITHUB_REPO: Nix flake repository URL. Default: github:imincik/flake-forge
             NIX_BUILD_TIMEOUT: Build timeout in seconds. Default: 600
             CACHE_SIZE: Number of manifests to cache. Default: 50
@@ -100,7 +100,7 @@ class Config:
 
         # Server
         self.FLASK_HOST = os.getenv("FLASK_HOST", "0.0.0.0")
-        self.FLASK_PORT = int(os.getenv("FLASK_PORT", "5000"))
+        self.FLASK_PORT = int(os.getenv("FLASK_PORT", "6443"))
 
         # Nix build
         self.GITHUB_REPO = os.getenv("GITHUB_REPO", "github:imincik/flake-forge")
