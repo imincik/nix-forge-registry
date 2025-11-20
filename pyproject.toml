@@ -1,7 +1,7 @@
 [project]
-name = "nix-forge-registry"
+name = "forge-registry"
 version = "0.1.0"
-description = "OCI-compliant container registry with on-demand Nix builds"
+description = "OCI-compliant container registry for Nix Forge."
 authors = [
     {name = "Ivan Mincik", email = "ivan.mincik@gmail.com"}
 ]
