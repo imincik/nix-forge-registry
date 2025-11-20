@@ -40,8 +40,9 @@ def run_nix_build(flake_ref: str, description: str = "image") -> str:
     nix_build_cmd = [
         "nix",
         "build",
-        flake_ref,
+        "--accept-flake-config",
         "--print-out-paths",
+        flake_ref,
     ]
     logger.debug(f"Running command: {' '.join(nix_build_cmd)}")
 
