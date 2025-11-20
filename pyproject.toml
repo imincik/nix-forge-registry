@@ -38,7 +38,7 @@ Repository = "https://github.com/imincik/flake-forge-registry"
 Issues = "https://github.com/imincik/flake-forge-registry/issues"
 
 [project.scripts]
-nix-forge-registry = "app:main"
+forge-registry = "app:main"
 
 [build-system]
 requires = ["setuptools>=68.0.0", "wheel"]
