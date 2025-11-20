@@ -33,9 +33,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/imincik/flake-forge-registry"
-Repository = "https://github.com/imincik/flake-forge-registry"
-Issues = "https://github.com/imincik/flake-forge-registry/issues"
+Homepage = "https://github.com/imincik/nix-forge-registry"
+Repository = "https://github.com/imincik/nix-forge-registry"
+Issues = "https://github.com/imincik/nix-forge-registry/issues"
 
 [project.scripts]
 forge-registry = "app:main"

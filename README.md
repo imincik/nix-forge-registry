@@ -47,7 +47,7 @@ FLASK_HOST=0.0.0.0         # Bind address
 FLASK_PORT=6443            # Bind port
 
 # Nix Build
-GITHUB_REPO=github:imincik/flake-forge  # Nix flake repository
+GITHUB_REPO=github:imincik/nix-forge  # Nix flake repository
 NIX_BUILD_TIMEOUT=600      # Build timeout in seconds
 
 # Cache
@@ -71,7 +71,7 @@ Format: `packages/<package-name>`
 # Pull a package image
 podman pull localhost:6443/packages/python-web:latest
 
-# Runs: nix build github:imincik/flake-forge#python-web.image
+# Runs: nix build github:imincik/nix-forge#python-web.image
 ```
 
 ### 2. Nix Forge applications
@@ -83,7 +83,7 @@ Format: `applications/<package-name>/<image-name>`
 podman pull localhost:6443/applications/myapp/web:latest
 podman pull localhost:6443/applications/myapp/worker:latest
 
-# Runs: nix build github:imincik/flake-forge#myapp.containers
+# Runs: nix build github:imincik/nix-forge#myapp.containers
 # Serves: /nix/store/.../web.tar.gz
 #         /nix/store/.../worker.tar.gz
 # Note: Image name in URL doesn't include .tar.gz extension

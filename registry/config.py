@@ -23,7 +23,7 @@ class Config:
             LOG_LEVEL: Logging level (DEBUG, INFO, WARNING, ERROR). Default: INFO
             FLASK_HOST: Server bind address. Default: 0.0.0.0
             FLASK_PORT: Server bind port. Default: 6443
-            GITHUB_REPO: Nix flake repository URL. Default: github:imincik/flake-forge
+            GITHUB_REPO: Nix flake repository URL. Default: github:imincik/nix-forge
             NIX_BUILD_TIMEOUT: Build timeout in seconds. Default: 600
             CACHE_SIZE: Number of manifests to cache. Default: 50
             MAX_IMAGE_NAME_LENGTH: Maximum image name length. Default: 255
@@ -37,7 +37,7 @@ class Config:
         self.FLASK_PORT = int(os.getenv("FLASK_PORT", "6443"))
 
         # Nix build
-        self.GITHUB_REPO = os.getenv("GITHUB_REPO", "github:imincik/flake-forge")
+        self.GITHUB_REPO = os.getenv("GITHUB_REPO", "github:imincik/nix-forge")
         self.NIX_BUILD_TIMEOUT = int(os.getenv("NIX_BUILD_TIMEOUT", "600"))  # seconds
 
         # Cache
